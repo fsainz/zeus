@@ -78,3 +78,20 @@ func errorUnableToAcceptSocketConnection() {
 		slog.Red("Unable to accept socket connection.")
 	}
 }
+
+func ErrorFileMonitorWrapperCrashed(err error) {
+	if !suppressErrors {
+		if err != nil {
+			slog.Red("The file monitoring wrapper crashed: " + err.Error())
+		} else {
+			slog.Red("The file monitoring wrapper terminated unexpectedly.")
+		}
+		ExitNow(1)
+	}
+}
+
+func errorFailedReadFromWatcher(err error) {
+	if !suppressErrors {
+		slog.Red(err.Error())
+	}
+}

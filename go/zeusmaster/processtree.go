@@ -3,6 +3,10 @@ package zeusmaster
 import (
 	"net"
 	"sync"
+	"syscall"
+
+	usock "github.com/burke/zeus/go/unixsocket"
+	slog "github.com/burke/zeus/go/shinylog"
 )
 
 type ProcessTree struct {
@@ -10,6 +14,8 @@ type ProcessTree struct {
 	ExecCommand string
 	SlavesByName map[string]*SlaveNode
 	CommandsByName map[string]*CommandNode
+	Booted chan string
+	Dead   chan string
 }
 
 type ProcessTreeNode struct {
@@ -42,6 +48,7 @@ func (node *SlaveNode) WaitUntilBooted() {
 
 func (node *SlaveNode) SignalBooted() {
 	node.bootWait.Unlock()
+	go node.listenForFeatures()
 }
 
 func (node *SlaveNode) SignalUnbooted() {
@@ -62,6 +69,7 @@ func (tree *ProcessTree) NewSlaveNode(name string, parent *SlaveNode) *SlaveNode
 	x.Parent = parent
 	x.SignalUnbooted()
 	x.Name = name
+	x.Features = make(map[string]bool)
 	tree.SlavesByName[name] = x
 	return x
 }
@@ -101,3 +109,58 @@ func (tree *ProcessTree) AllCommandsAndAliases() []string {
 	return values
 }
 
+func (node *SlaveNode) listenForFeatures() {
+	sock := node.Socket
+	for {
+		msg, _, err := usock.ReadFromUnixSocket(sock)
+		if err != nil {
+			println(err.Error())
+			return
+		}
+		file, err := ParseFeatureMessage(msg)
+		if err != nil {
+			println("listenForFeatures(" + node.Name + "): " + err.Error())
+		}
+		node.addFeature(file)
+	}
+}
+
+func (node *SlaveNode) addFeature(file string) {
+	node.Features[file] = true
+	AddFile(file)
+}
+
+func (node *SlaveNode) Kill(tree *ProcessTree) {
+	node.mu.Lock()
+	defer node.mu.Unlock()
+
+	pid := node.Pid
+	if pid > 0 {
+		err := syscall.Kill(pid, 9) // error implies already dead -- no worries.
+		if err != nil {
+			slog.SlaveKilled(node.Name)
+		} else {
+			slog.SlaveDied(node.Name)
+		}
+		node.SignalUnbooted()
+		tree.Dead <- node.Name
+	}
+	node.Wipe()
+
+	for _, s := range node.Slaves {
+		go s.Kill(tree)
+	}
+}
+func (tree *ProcessTree) KillNodesWithFeature(file string) {
+	tree.Root.killNodesWithFeature(tree, file)
+}
+
+func (node *SlaveNode) killNodesWithFeature(tree *ProcessTree, file string) {
+	if node.Features[file] {
+		node.Kill(tree, )
+	} else {
+		for _, s := range node.Slaves {
+			s.killNodesWithFeature(tree, file)
+		}
+	}
+}

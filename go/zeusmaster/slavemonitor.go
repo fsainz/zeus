@@ -1,7 +1,6 @@
 package zeusmaster
 
 import (
-	"syscall"
 	"strconv"
 	"math/rand"
 	"strings"
@@ -16,12 +15,10 @@ import (
 
 type SlaveMonitor struct {
 	tree *ProcessTree
-	booted chan string
-	dead   chan string
 }
 
 func StartSlaveMonitor(tree *ProcessTree, local *net.UnixConn, remote *os.File, quit chan bool) {
-	monitor := &SlaveMonitor{tree, make(chan string), make(chan string)}
+	monitor := &SlaveMonitor{tree}
 
 	// We just want this unix socket to be a channel so we can select on it...
 	registeringFds := make(chan int, 3)
@@ -44,17 +41,17 @@ func StartSlaveMonitor(tree *ProcessTree, local *net.UnixConn, remote *os.File, 
 			monitor.cleanupChildren()
 			return
 		case fd := <- registeringFds:
-			monitor.slaveDidBeginRegistration(fd)
-		case name := <- monitor.booted:
-			monitor.slaveDidBoot(name)
-		case name := <- monitor.dead:
-			monitor.slaveDidDie(name)
+			go monitor.slaveDidBeginRegistration(fd)
+		case name := <- monitor.tree.Booted:
+			go monitor.slaveDidBoot(name)
+		case name := <- monitor.tree.Dead:
+			go monitor.slaveDidDie(name)
 		}
 	}
 }
 
 func (mon *SlaveMonitor) cleanupChildren() {
-	killSlave(mon.tree.Root)
+	mon.tree.Root.Kill(mon.tree)
 }
 
 func (mon *SlaveMonitor) slaveDidBoot(slaveName string) {
@@ -66,35 +63,13 @@ func (mon *SlaveMonitor) slaveDidBoot(slaveName string) {
 }
 
 func (mon *SlaveMonitor) slaveDidDie(slaveName string) {
-	println("Stage `" + slaveName + "` died.")
 	deadSlave := mon.tree.FindSlaveByName(slaveName)
-	go killSlave(deadSlave)
+	mon.bootSlave(deadSlave)
 }
 
-func killSlave(slave *SlaveNode) {
-	slave.mu.Lock()
-	defer slave.mu.Unlock()
-
-	pid := slave.Pid
-	if pid > 0 {
-		err := syscall.Kill(pid, 9) // error implies already dead -- no worries.
-		if err != nil {
-			slog.SlaveKilled(slave.Name)
-		} else {
-			slog.SlaveDied(slave.Name)
-		}
-	}
-	slave.Wipe()
-
-	for _, s := range slave.Slaves {
-		go killSlave(s)
-	}
-}
 
 func (mon *SlaveMonitor) bootSlave(slave *SlaveNode) {
-	if slave.Parent.Pid < 1 {
-		panic("Can't boot a slave with an unbooted parent")
-	}
+	slave.Parent.WaitUntilBooted()
 	msg := CreateSpawnSlaveMessage(slave.Name)
 	slave.Parent.Socket.Write([]byte(msg))
 }
@@ -176,6 +151,5 @@ func (mon *SlaveMonitor) handleSlaveRegistration(slaveSocket *net.UnixConn) {
 		node.RegisterError(msg)
 	}
 	node.SignalBooted()
-	mon.booted <- identifier
-
+	mon.tree.Booted <- identifier
 }

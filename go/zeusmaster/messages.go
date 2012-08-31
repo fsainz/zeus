@@ -48,3 +48,12 @@ func ParseClientCommandRequestMessage(msg string) (string, string, error) {
 
 	return command, arguments, nil
 }
+
+func ParseFeatureMessage(msg string) (string, error) {
+	parts := strings.SplitN(msg, ":", 2)
+	if parts[0] != "F" {
+		return "", errors.New("Wrong message type!")
+	}
+
+	return strings.TrimSpace(parts[1]), nil
+}
